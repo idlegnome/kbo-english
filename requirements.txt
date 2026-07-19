@@ -1,0 +1,5 @@
+# posting to Bluesky
+atproto>=0.0.55
+
+# Game and stat data come from public, unauthenticated JSON endpoints
+# (Naver Sports) and the KBO English site, via the standard library.
