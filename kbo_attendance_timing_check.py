@@ -18,9 +18,10 @@ import re
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 KST = ZoneInfo('Asia/Seoul')
-LOG = '/Users/christopherstanford/Documents/Scans/kbo_attendance_timing.log'
+LOG = str(Path.home() / 'Documents' / 'Scans' / 'kbo_attendance_timing.log')
 CROWD_URL = 'https://www.koreabaseball.com/Record/Crowd/GraphDaily.aspx'
 SCHED = ('https://api-gw.sports.naver.com/schedule/games'
          '?upperCategoryId=kbaseball&categoryId=kbo&fromDate={d}&toDate={d}')
