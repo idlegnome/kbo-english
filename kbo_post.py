@@ -57,6 +57,7 @@ KST = ZoneInfo('Asia/Seoul')
 HANDLE = 'kbo-english.bsky.social'
 KEYCHAIN_SERVICE = 'kbobot-bluesky'
 HISTORY = Path(__file__).parent / 'kbo_history.json'
+STATE = Path(__file__).parent / 'kbo_state.json'
 ROSTER = Path(__file__).parent / 'kbo_roster.json'
 RESULTS_ARCHIVE = Path(__file__).parent / 'kbo_results_history.json'
 
@@ -874,5 +875,25 @@ def main():
         archive_results(date_str, finals, cancelled)
 
 
+def record_run(mode):
+    """Heartbeat: note that a run completed without error, whether or not it
+    had anything to post. Off-days and the whole off-season are legitimately
+    postless, so 'last posted' cannot tell a broken bot from a quiet one --
+    'last completed a run' can. Never let this break a run that already
+    succeeded."""
+    try:
+        state = json.loads(STATE.read_text()) if STATE.exists() else {}
+        state['last_run_at'] = datetime.now(timezone.utc).isoformat()
+        state['last_run_mode'] = mode
+        STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True))
+    except Exception as exc:                    # noqa: BLE001 - heartbeat is best-effort
+        print(f'(could not write heartbeat: {exc})')
+
+
 if __name__ == '__main__':
     main()
+    # Only real runs count as a heartbeat; a manual --dry-run should not make a
+    # stalled bot look alive.
+    if '--dry-run' not in sys.argv[1:]:
+        record_run(next((m for m in ('schedule', 'standings', 'leaders')
+                         if m in sys.argv[1:]), 'results'))

@@ -1,5 +1,6 @@
 # Runtime dedup + name-cache state (rebuildable)
 kbo_history.json
+kbo_state.json
 kbo_results_history.json
 kbo_roster.json
 
