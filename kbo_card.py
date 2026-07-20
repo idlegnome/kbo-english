@@ -2,12 +2,14 @@
 """
 Card renderer for KBO in English (@kbo-english.bsky.social).
 
-Renders the bot's three post types as monospace "ink on cream" PNG cards.
-Headless Google Chrome does the type/emoji layout (so colour emoji Just Work via
-system fonts); Pillow crops the result to content, so no height is ever guessed.
+Renders the bot's five post types as monospace "ink on cream" PNG cards.
+Headless Google Chrome does the type and image layout; Pillow crops the result
+to content, so no height is ever guessed.
 
     render_results_card()    the daily final-scores digest
     render_box_score_card()  one finished game, with a traditional line score
+    render_schedule_card()   tonight's fixtures and their probable starters
+    render_leaders_card()    one leaderboard's top three
     render_standings_card()  the league table, with the postseason cut line
 
 Cards are rendered on a magenta sentinel background and cropped, so a 4-game day
@@ -20,6 +22,7 @@ the romanisation, this module owns pixels only. See __main__ for the shapes.
 Raises CardRenderError on any failure so the poster can fall back to plaintext.
 """
 
+import base64
 import html
 import subprocess
 import tempfile
@@ -37,9 +40,47 @@ RED = '#c8323f'              # top bar, winning score, postseason line
 MUTED = '#8a8578'            # losers, labels, dates, footer
 RULE = '#ded8cc'             # hairline row separators
 
-# Menlo covers latin + digits; Apple Color Emoji is picked up automatically for
-# the team emoji. Monospace throughout so score columns line up by construction.
-FONT_STACK = "Menlo, monospace"
+# IBM Plex Mono, vendored in fonts/ and embedded in each rendered page rather
+# than read from the system, so a card looks identical wherever it is rendered —
+# this Mac today, a Linux CI runner later. Plex is SIL OFL 1.1 (see
+# fonts/LICENSE.txt), which is what makes bundling it legitimate; the macOS
+# stock monospaces are not redistributable and could not travel with the repo.
+# Monospace throughout so score columns line up by construction.
+FONT_STACK = "'IBM Plex Mono', monospace"
+FONT_DIR = Path(__file__).resolve().parent / 'fonts'
+FONT_FILES = [('IBMPlexMono-Regular.otf', 400), ('IBMPlexMono-Bold.otf', 700)]
+_FONT_FACE_CSS = None
+
+
+def _font_face_css():
+    """@font-face rules with the fonts inlined as data URIs, built once. Returns
+    '' if the files are missing, so rendering falls back to whatever monospace
+    the system has rather than failing outright."""
+    global _FONT_FACE_CSS
+    if _FONT_FACE_CSS is None:
+        rules = []
+        for name, weight in FONT_FILES:
+            path = FONT_DIR / name
+            try:
+                blob = base64.b64encode(path.read_bytes()).decode('ascii')
+            except OSError:
+                continue
+            rules.append(
+                f"@font-face{{font-family:'IBM Plex Mono';font-weight:{weight};"
+                f"font-style:normal;src:url(data:font/otf;base64,{blob})"
+                f" format('opentype')}}")
+        _FONT_FACE_CSS = ''.join(rules)
+    return _FONT_FACE_CSS
+
+
+# Team-mark sizes in CSS px, one per context. KBO's logos are wordmarks rather
+# than simple icons, so they need more room than the emoji they replaced before
+# they read as anything at all.
+MARK_ROW = 28        # a fixture or result line
+MARK_HEADLINE = 40   # the two team rows atop a box score
+MARK_LINESCORE = 26  # the line score's row labels
+MARK_HR = 24         # each team's home-run group
+MARK_TABLE = 28      # standings and leaderboard rows
 
 
 class CardRenderError(RuntimeError):
@@ -107,8 +148,10 @@ html,body{{margin:0;background:#{SENTINEL}}}
 .hr{{border-bottom:2px solid {INK};margin:14px 0 0}}
 .foot{{margin-top:14px;padding-top:12px;border-top:1px solid {RULE};
   font-size:11px;color:{MUTED};letter-spacing:0.06em}}
-/* Club logos sit on the text baseline the way the emoji they replace did. */
-img.lg{{vertical-align:-0.28em;object-fit:contain}}
+/* Club logos centre on the text's middle rather than sitting on its baseline:
+   they are much taller than the type, so a baseline leaves them riding high.
+   Unlike a fixed em offset, this holds as the MARK_* sizes change. */
+img.lg{{vertical-align:middle;object-fit:contain}}
 """
 
 FOOTER = ('<div class="foot">KBO IN ENGLISH &middot; '
@@ -117,7 +160,8 @@ FOOTER = ('<div class="foot">KBO IN ENGLISH &middot; '
 
 def _document(css, body):
     return (f'<!doctype html><html><head><meta charset="utf-8"><style>'
-            f'{BASE_CSS}{css}</style></head><body>{body}</body></html>')
+            f'{_font_face_css()}{BASE_CSS}{css}</style></head><body>{body}'
+            f'</body></html>')
 
 
 def _mark(item, prefix, size):
@@ -157,9 +201,9 @@ RESULTS_CSS = f"""
 
 
 def _game_block(g):
-    away = (f'<span class="a">{_mark(g, "away", 22)} '
+    away = (f'<span class="a">{_mark(g, "away", MARK_ROW)} '
             f'{_esc(g["away_name"])}</span>')
-    home = (f'<span class="h">{_mark(g, "home", 22)} '
+    home = (f'<span class="h">{_mark(g, "home", MARK_ROW)} '
             f'{_esc(g["home_name"])}</span>')
     score = (f'<span class="s">{g["away_score"]} &mdash; '
              f'{g["home_score"]}</span>')
@@ -202,9 +246,9 @@ SCHEDULE_CSS = f"""
 
 
 def _fixture_block(g):
-    away = (f'<span class="a">{_mark(g, "away", 22)} '
+    away = (f'<span class="a">{_mark(g, "away", MARK_ROW)} '
             f'{_esc(g["away_name"])}</span>')
-    home = (f'<span class="h">{_mark(g, "home", 22)} '
+    home = (f'<span class="h">{_mark(g, "home", MARK_ROW)} '
             f'{_esc(g["home_name"])}</span>')
     mid = f'<span class="mid">{_esc(g.get("time") or "@")}</span>'
     starters = ''
@@ -238,25 +282,30 @@ def render_schedule_card(date_label, games, out_path, title="Tonight's Games",
 
 # Label gutter, sized to the longest label ('Home runs', 9 chars at 11px with
 # 0.06em tracking, plus its 10px right padding). Value column takes what is left
-# of the card after its 30px side padding. Menlo's advance is exactly 0.6em, so
-# a monospace line's width is char_count * 0.6 * font_size and the fit below is
-# arithmetic, not a guess.
+# of the card after its 30px side padding. Plex's advance is exactly 0.6em
+# (measured), so a monospace line's width is char_count * 0.6 * font_size and
+# the fit below is arithmetic, not a guess. Menlo, which this replaced, was
+# 0.6021, so the constant very slightly under-read it.
 KV_LABEL_WIDTH = 80
 KV_VALUE_WIDTH = CARD_WIDTH - 60 - KV_LABEL_WIDTH
 MONO_ADVANCE = 0.6
 
 
 BOX_CSS = f"""
-.tm{{display:flex;align-items:baseline;justify-content:space-between;
+/* Centre the mark against the club name rather than sitting it on the text
+   baseline: the logos are far taller than the type, so a baseline puts them
+   visibly high. Flex centring holds at any MARK_HEADLINE size. */
+.tm{{display:flex;align-items:center;justify-content:space-between;
   margin:18px 0}}
-.tm .n{{font-size:22px;font-weight:700}}
+.tm .n{{display:flex;align-items:center;gap:16px;font-size:22px;
+  font-weight:700}}
 .tm .sc{{font-size:26px;font-weight:700}}
 .hr2{{border-bottom:2px solid {INK};margin:4px 0 0}}
 table.ls{{width:100%;border-collapse:collapse;margin:16px 0 4px;
   font-size:13px;table-layout:fixed}}
 table.ls th,table.ls td{{text-align:right;padding:5px 0;font-weight:400}}
 table.ls th{{color:{MUTED};font-size:11px;border-bottom:1px solid {RULE}}}
-table.ls td.lab,table.ls th.lab{{text-align:left;width:34px}}
+table.ls td.lab,table.ls th.lab{{text-align:left;width:40px}}
 table.ls td.t,table.ls th.t{{font-weight:700;width:34px}}
 table.ls .t.first{{border-left:1px solid {RULE};padding-left:10px}}
 table.ls .li{{padding-right:10px}}   /* keep the last inning off the divider */
@@ -296,7 +345,7 @@ def _line_score_table(line):
             val = got[i] if i < len(got) else ('X' if side == 'home' else '')
             cells += f'<td{last if i == innings - 1 else ""}>{_esc(val)}</td>'
         r, h, e = line[f'{side}_rhe']
-        rows += (f'<tr class="r"><td class="lab">{_mark(line, side, 20)}</td>'
+        rows += (f'<tr class="r"><td class="lab">{_mark(line, side, MARK_LINESCORE)}</td>'
                  f'{cells}<td class="t first">{r}</td><td class="t">{h}</td>'
                  f'<td class="t">{e}</td></tr>')
     return f'<table class="ls">{head}{rows}</table>'
@@ -328,10 +377,10 @@ def render_box_score_card(date_label, game, out_path, title='Final'):
          hr:     [{emoji/logo per team, 'names': 'Park Chan Ho, An Jae Seok (2)'}]
          extra:  optional [(label, value)] rows appended after HR}
     Returns (path, (w, h))."""
-    away = (f'<div class="tm"><div class="n">{_mark(game, "away", 30)} '
+    away = (f'<div class="tm"><div class="n">{_mark(game, "away", MARK_HEADLINE)}'
             f'{_esc(game["away_name"])}</div>'
             f'<div class="sc">{game["away_score"]}</div></div>')
-    home = (f'<div class="tm"><div class="n">{_mark(game, "home", 30)} '
+    home = (f'<div class="tm"><div class="n">{_mark(game, "home", MARK_HEADLINE)}'
             f'{_esc(game["home_name"])}</div>'
             f'<div class="sc">{game["home_score"]}</div></div>')
 
@@ -341,7 +390,7 @@ def render_box_score_card(date_label, game, out_path, title='Final'):
     if game.get('pitchers'):
         # All three decisions share one row, shrinking a little if the names are
         # long, rather than wrapping a lone '(14)' onto a second line. Bold and
-        # regular Menlo share an advance width, so the fit maths is unaffected
+        # regular Plex share an advance width, so the fit maths is unaffected
         # by emboldening the W/L/S codes.
         pitchers = game['pitchers']
         plain = ' · '.join(f'{code} {name} ({detail})'
@@ -352,7 +401,7 @@ def render_box_score_card(date_label, game, out_path, title='Final'):
         parts.append(_kv('Pitchers', marked,
                          f'font-size:{_fit_size(plain)}px;white-space:nowrap'))
     if game.get('hr'):
-        groups = ''.join(f'<div class="hrg">{_mark(g, "team", 18)} '
+        groups = ''.join(f'<div class="hrg">{_mark(g, "team", MARK_HR)} '
                          f'{_esc(g["names"])}</div>' for g in game['hr'])
         parts.append(_kv('Home runs', groups))
     for label, value in game.get('extra') or ():
@@ -406,7 +455,7 @@ def render_leaders_card(date_label, title, rows, out_path,
     body = ''
     for r in rows:
         body += (f'<tr><td class="rk">{_esc(r["rank"])}</td>'
-                 f'<td class="nm">{_mark(r, "team", 22)} {_esc(r["name"])}</td>'
+                 f'<td class="nm">{_mark(r, "team", MARK_TABLE)} {_esc(r["name"])}</td>'
                  f'<td class="vl">{_esc(r["value"])}</td></tr>')
     card = (f'<div class="card">'
             f'{_head(title, date_label, subtitle=subtitle)}'
@@ -426,7 +475,7 @@ def render_standings_card(date_label, rows, out_path, cut_after=5,
             '<th class="gb">GB</th></tr>')
     for i, r in enumerate(rows, start=1):
         body += (f'<tr><td class="rk">{i}</td>'
-                 f'<td class="tm">{_mark(r, "team", 22)} {_esc(r["name"])}</td>'
+                 f'<td class="tm">{_mark(r, "team", MARK_TABLE)} {_esc(r["name"])}</td>'
                  f'<td class="wl">{r["w"]}&ndash;{r["l"]}</td>'
                  f'<td class="gb">{_esc(r.get("gb", ""))}</td></tr>')
         if cut_after and i == cut_after and i < len(rows):
