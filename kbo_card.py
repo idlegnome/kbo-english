@@ -16,7 +16,7 @@ Cards are rendered on a magenta sentinel background and cropped, so a 4-game day
 and a 5-game day both come out tight. Corners are square on purpose: Bluesky
 rounds image corners itself.
 
-All three take plain dicts, not Naver API payloads — kbo_post owns the API and
+All five take plain dicts, not Naver API payloads — kbo_post owns the API and
 the romanisation, this module owns pixels only. See __main__ for the shapes.
 
 Raises CardRenderError on any failure so the poster can fall back to plaintext.
@@ -24,11 +24,37 @@ Raises CardRenderError on any failure so the poster can fall back to plaintext.
 
 import base64
 import html
+import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+# Chrome does the layout. Look for it rather than hardcoding a macOS path, so
+# the same renderer works on a Linux CI runner: KBO_CHROME wins if set, then
+# anything on PATH under its various Linux names, then the standard macOS spot.
+CHROME_ENV = 'KBO_CHROME'
+CHROME_CANDIDATES = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+]
+CHROME_ON_PATH = ['google-chrome', 'google-chrome-stable', 'chromium',
+                  'chromium-browser', 'chrome']
+
+
+def find_chrome():
+    """Path to a usable Chrome/Chromium, or None. Result is not cached: an
+    hour-long bot run has no reason to hold a stale answer."""
+    explicit = os.environ.get(CHROME_ENV)
+    if explicit:
+        return explicit if Path(explicit).exists() else None
+    for name in CHROME_ON_PATH:
+        found = shutil.which(name)
+        if found:
+            return found
+    return next((c for c in CHROME_CANDIDATES if Path(c).exists()), None)
+
+
 SENTINEL = 'FF00FF'          # page background; cropped away. Never appears in art.
 SENTINEL_RGB = (255, 0, 255)
 CARD_WIDTH = 620             # CSS px; device-scale 2 renders at 1240 px.
@@ -114,15 +140,17 @@ def _crop_to_content(raw_path, out_path):
 
 def _shoot(doc, out_path):
     """Render an HTML doc to a content-cropped PNG. Returns (out_path, (w, h))."""
-    if not Path(CHROME).exists():
-        raise CardRenderError(f'Chrome not found at {CHROME}')
+    chrome = find_chrome()
+    if not chrome:
+        raise CardRenderError(
+            'no Chrome or Chromium found (set KBO_CHROME to its path)')
     out_path = str(out_path)
     with tempfile.TemporaryDirectory() as td:
         html_path = Path(td) / 'card.html'
         raw_png = Path(td) / 'raw.png'
         html_path.write_text(doc, encoding='utf-8')
         cmd = [
-            CHROME, '--headless=new', '--disable-gpu', '--hide-scrollbars',
+            chrome, '--headless=new', '--disable-gpu', '--hide-scrollbars',
             '--force-device-scale-factor=2',
             f'--window-size={CARD_WIDTH},{RENDER_HEIGHT}',
             f'--default-background-color={SENTINEL}FF',

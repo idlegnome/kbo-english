@@ -9,8 +9,13 @@ Four post types:
   results    A nightly final-scores digest (every game's final in one post),
              then a compact box score threaded underneath per game.
   standings  A daily rank / W-L / games-back table (from the KBO English site).
-  leaders    A weekly season-leaders thread: top 3 in each core hitting and
-             pitching stat, romanised via the KBO English player pages.
+  leaders    A weekly season-leaders thread: a lead post, then one reply per
+             leaderboard (top 3), romanised via the KBO English player pages.
+
+Every post also carries a rendered PNG card of the same information, built by
+kbo_card via kbo_card_data. Cards are strictly additive: the text is unchanged
+and complete on its own, each card is described in alt text, and a rendering
+failure drops the image rather than the post.
 
 schedule/results/leaders draw their game and stat data from Naver Sports' public
 API; standings and the leaders' name romanisation read the KBO English site.
@@ -85,7 +90,7 @@ KBO_PLAYER_PAGE = {
 }
 
 MAX_POST_CHARS = 290   # packing target: a conservative code-point buffer used to
-                       # split threads (see pack_lines / compose_leaders).
+                       # split threads (see pack_lines / compose_schedule).
 BLUESKY_LIMIT = 300    # Bluesky's real per-post ceiling, counted in GRAPHEMES —
                        # the hard gate emit() checks (a flag emoji is 2 code
                        # points but 1 grapheme, so code-point length over-counts).
@@ -343,7 +348,14 @@ def fetch_standings():
 
 def compose_standings(date_str, rows):
     """Ranked standings post: '1. 🦁 Samsung 52-32', GB after a middot, and a
-    postseason cutline after 5th (KBO sends its top 5 to the playoffs)."""
+    postseason cutline after 5th (KBO sends its top 5 to the playoffs).
+
+    The cutline only appears in the final month of the regular season, matching
+    the card that accompanies this post — the two are read together, so they
+    must agree."""
+    import kbo_card_data
+    cutline = kbo_card_data.show_cutline(
+        datetime.strptime(date_str, '%Y-%m-%d').date())
     lines = []
     for r in rows:
         code = STANDINGS_TEAM_CODE.get(r['team'], r['team'])
@@ -351,7 +363,7 @@ def compose_standings(date_str, rows):
         name = SHORT_NAMES.get(code, r['team'].title())
         gb = '' if r['gb'] in ('0.0', '0', '-') else f' · {r["gb"]}'
         lines.append(f'{r["rank"]}. {emoji} {name} {r["w"]}-{r["l"]}{gb}'.strip())
-        if r['rank'] == PLAYOFF_SPOTS:
+        if r['rank'] == PLAYOFF_SPOTS and cutline:
             lines.append('— postseason —')
     body = (f'🇰🇷⚾ Standings · {format_date(date_str)}\n(W-L · games back)\n\n'
             + '\n'.join(lines) + '\n\n')
@@ -447,39 +459,6 @@ def leader_block(label, rows):
     return '\n'.join(lines)
 
 
-def compose_leaders(date_str, data, roster, added):
-    """Season-leaders thread: leaderboard blocks packed into as few posts as fit,
-    only the first post carrying the title and the hashtags. Returns a list of
-    (body, tags) segments, or [] if no leaderboard has data."""
-    title = f'🇰🇷⚾ KBO season leaders · {format_date(date_str)}'
-    blocks = []
-    for key, label in HITTING_LEADERS + PITCHING_LEADERS:
-        rows = leader_rows(key, data.get(key, []), roster, added)
-        if rows:
-            blocks.append(leader_block(label, rows))
-    if not blocks:
-        return []
-
-    # Greedily pack blocks into posts. The first post reserves room for the title
-    # and the hashtag footer; continuation posts get the full width and no tags.
-    reserve = len(tags_footer(HASHTAGS))
-    bodies, cur = [], []
-    for b in blocks:
-        first = not bodies
-        header = f'{title}\n\n' if first else ''
-        limit = MAX_POST_CHARS - (reserve if first else 0)
-        if cur and len(header + '\n\n'.join(cur + [b])) > limit:
-            bodies.append(header + '\n\n'.join(cur))
-            cur = [b]
-        else:
-            cur.append(b)
-    if cur:
-        header = f'{title}\n\n' if not bodies else ''
-        bodies.append(header + '\n\n'.join(cur))
-
-    return [(body, HASHTAGS if i == 0 else []) for i, body in enumerate(bodies)]
-
-
 def compose_results(date_str, finals, cancelled=()):
     """Final-scores digest, with a Postponed section listing any cancelled games
     rather than dropping them."""
@@ -568,18 +547,6 @@ def box_score_body(game, record, roster, added):
         if grapheme_len(plain_text(body, [])) <= BLUESKY_LIMIT:
             return body
     return '\n'.join(base) + '\n\n'             # base alone over limit (unreachable)
-
-
-def compose_box_scores(finals, roster, added):
-    """A box-score reply per finished game, in start order, as untagged
-    (body, []) segments — only the digest post carries the hashtags. A game
-    whose record can't be fetched is skipped rather than blocking the thread."""
-    segments = []
-    for g in by_start(finals):
-        record = fetch_box_score(g['gameId'])
-        if record:
-            segments.append((box_score_body(g, record, roster, added), []))
-    return segments
 
 
 def tags_footer(tags):
@@ -694,6 +661,137 @@ def build_tb(body, tags):
     return tb
 
 
+# --------------------------------------------------------------------------
+# Cards. Each post can carry a rendered PNG of the same information. Rendering
+# needs Chrome and Pillow, so it is always attempted inside build_card(): if
+# anything fails the post still goes out as plain text, which is what it was
+# before cards existed. A missed image is not worth a missed post.
+# --------------------------------------------------------------------------
+
+def build_card(render, alt):
+    """Render one card and return {'png', 'alt', 'size'}, or None if rendering
+    failed for any reason. `render` is a zero-argument callable that writes a
+    PNG to the path it is given and returns (path, (w, h))."""
+    import tempfile
+    try:
+        import kbo_card
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / 'card.png')
+            _, size = render(path)
+            return {'png': Path(path).read_bytes(), 'alt': alt, 'size': size}
+    except Exception as exc:                # noqa: BLE001 - never block a post
+        print(f'  (card not rendered: {exc.__class__.__name__}: {exc})')
+        return None
+
+
+def seg_parts(segment):
+    """Segments are (body, tags) or (body, tags, card). Normalise to three."""
+    body, tags = segment[0], segment[1]
+    card = segment[2] if len(segment) > 2 else None
+    return body, tags, card
+
+
+def with_card(segments, index, card):
+    """Return `segments` with `card` attached to the segment at `index`."""
+    if not card:
+        return segments
+    out = list(segments)
+    body, tags, _ = seg_parts(out[index])
+    out[index] = (body, tags, card)
+    return out
+
+
+def attach_results_card(date_str, finals, segments):
+    """The final-scores digest gets a card of the same slate."""
+    import kbo_card
+    import kbo_card_data as data
+    records = {g['gameId']: fetch_box_score(g['gameId']) for g in finals}
+    rows = data.results_input(finals, {k: v for k, v in records.items() if v})
+    label = data.card_date(date_str)
+    card = build_card(
+        lambda path: kbo_card.render_results_card(label, rows, path),
+        data.results_alt(label, rows))
+    return with_card(segments, 0, card)
+
+
+def box_score_segments(finals, roster, added):
+    """A box-score reply per finished game, each carrying its own card."""
+    import kbo_card
+    import kbo_card_data as data
+    segments = []
+    for g in by_start(finals):
+        record = fetch_box_score(g['gameId'])
+        if not record:
+            continue
+        body = box_score_body(g, record, roster, added)
+        game = data.box_input(g, record, roster, added)
+        label = data.card_date(f'{g["gameId"][:4]}-{g["gameId"][4:6]}-{g["gameId"][6:8]}')
+        card = build_card(
+            lambda path, game=game, label=label:
+                kbo_card.render_box_score_card(label, game, path),
+            data.box_alt(label, game))
+        segments.append((body, [], card))
+    return segments
+
+
+def attach_schedule_card(date_str, playable, roster, segments):
+    """Tonight's fixtures and their probable starters, on one card. The text
+    post splits those across a post and a reply; the card holds both."""
+    import kbo_card
+    import kbo_card_data as data
+    rows, subtitle = data.schedule_input(playable, roster)
+    label = data.card_date(date_str)
+    card = build_card(
+        lambda path: kbo_card.render_schedule_card(label, rows, path,
+                                                   subtitle=subtitle),
+        data.schedule_alt(label, rows, subtitle))
+    return with_card(segments, 0, card)
+
+
+def attach_standings_card(date_str, rows, segments):
+    import kbo_card
+    import kbo_card_data as data
+    card_rows = data.standings_input(rows)
+    label = data.card_date(date_str)
+    on = datetime.strptime(date_str, '%Y-%m-%d').date()
+    cut = PLAYOFF_SPOTS if data.show_cutline(on) else None
+    card = build_card(
+        lambda path: kbo_card.render_standings_card(label, card_rows, path,
+                                                    cut_after=cut),
+        data.standings_alt(label, card_rows, cut))
+    return with_card(segments, 0, card)
+
+
+def leaders_segments(date_str, raw, roster, added):
+    """A lead post, then one reply per leaderboard carrying that board's card.
+
+    Each board appears once. Where a card renders, the reply is the card and
+    its title, with the standings themselves in the alt text; where rendering
+    failed, the reply falls back to the old text block so the numbers still go
+    out. Returns [] if no board has data."""
+    import kbo_card
+    import kbo_card_data as data
+    label = data.card_date(date_str)
+    boards = []
+    for key, title in HITTING_LEADERS + PITCHING_LEADERS:
+        top = leader_rows(key, raw.get(key, []), roster, added)
+        if not top:
+            continue
+        rows = data.leaders_input(top)
+        card = build_card(
+            lambda path, title=title, rows=rows:
+                kbo_card.render_leaders_card(label, title, rows, path),
+            data.leaders_alt(label, title, rows))
+        if card:
+            boards.append((f'{title}\n\n', [], card))
+        else:
+            boards.append((leader_block(title, top) + '\n\n', [], None))
+    if not boards:
+        return []
+    lead = f'🇰🇷⚾ KBO season leaders · {format_date(date_str)}\n\n'
+    return [(lead, HASHTAGS)] + boards
+
+
 def post_thread(segments):
     """Post one or more segments as a Bluesky thread (each replies to the last).
     atproto is imported lazily so --dry-run runs without the dependency."""
@@ -704,11 +802,20 @@ def post_thread(segments):
     bsky.login(HANDLE, password)
 
     root_ref = parent_ref = None
-    for body, tags in segments:
+    for segment in segments:
+        body, tags, card = seg_parts(segment)
         reply = None
         if root_ref is not None:
             reply = models.AppBskyFeedPost.ReplyRef(root=root_ref, parent=parent_ref)
-        resp = bsky.send_post(text=build_tb(body, tags), reply_to=reply)
+        if card:
+            width, height = card['size']
+            resp = bsky.send_image(
+                text=build_tb(body, tags), image=card['png'],
+                image_alt=card['alt'], reply_to=reply,
+                image_aspect_ratio=models.AppBskyEmbedDefs.AspectRatio(
+                    width=width, height=height))
+        else:
+            resp = bsky.send_post(text=build_tb(body, tags), reply_to=reply)
         ref = models.create_strong_ref(resp)
         if root_ref is None:
             root_ref = ref
@@ -769,12 +876,19 @@ def evaluate_results(candidates, history, ignore_history):
 def emit(mode, date_str, segments, dry_run, history, count):
     """Print each segment, and (unless dry-run) post the thread and record it.
     Returns True if it actually posted."""
-    for i, (body, tags) in enumerate(segments):
+    for i, segment in enumerate(segments):
+        body, tags, card = seg_parts(segment)
         text = plain_text(body, tags)
         length = grapheme_len(text)
         flag = '  ⚠ OVER LIMIT' if length > BLUESKY_LIMIT else ''
         label = f'post {i + 1}/{len(segments)}' if len(segments) > 1 else 'post'
         print(f'\n{mode} {label} ({length} chars){flag}\n{"-"*40}\n{text}\n{"-"*40}')
+        if card:
+            w, h = card['size']
+            print(f'  + card {w}x{h}, {len(card["png"])//1024} KB\n'
+                  f'    alt: {card["alt"]}')
+        else:
+            print('  (no card — text only)')
     if dry_run:
         print('\n(dry run — nothing posted, history untouched)')
         return False
@@ -806,6 +920,7 @@ def main():
             print('standings unavailable (KBO site) — skipping.')
             return
         segments = compose_standings(date_str, rows)
+        segments = attach_standings_card(date_str, rows, segments)
         emit('standings', date_str, segments, dry_run, history, len(rows))
         return
 
@@ -818,7 +933,7 @@ def main():
         data = fetch_leaders(date_str[:4])
         roster = load_roster()
         added = []
-        segments = compose_leaders(date_str, data, roster, added)
+        segments = leaders_segments(date_str, data, roster, added)
         if added:
             if not dry_run:
                 ROSTER.write_text(json.dumps(roster, ensure_ascii=False,
@@ -849,6 +964,7 @@ def main():
             away, home = fetch_starters(g['gameId'])
             items.append({'game': g, 'away': away, 'home': home})
         segments = compose_schedule(date_str, items, roster)
+        segments = attach_schedule_card(date_str, playable, roster, segments)
         emit('schedule', date_str, segments, dry_run, history, len(playable))
         return
 
@@ -862,7 +978,8 @@ def main():
     roster = load_roster()
     added = []
     segments = compose_results(date_str, finals, cancelled)
-    segments += compose_box_scores(finals, roster, added)
+    segments = attach_results_card(date_str, finals, segments)
+    segments += box_score_segments(finals, roster, added)
     if added:
         if not dry_run:
             ROSTER.write_text(json.dumps(roster, ensure_ascii=False,

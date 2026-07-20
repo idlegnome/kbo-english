@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Builds kbo_card inputs from live Naver/KBO data and renders the three cards.
+Turns live Naver/KBO data into kbo_card inputs, and into the alt text that
+describes each card.
 
 This is the adapter layer: kbo_post owns the API and the romanisation, kbo_card
-owns pixels, and this maps one to the other. Run it to preview a real day:
+owns pixels, and this maps one to the other. Both the bot and the preview CLI
+import it, so it must stay free of anything that posts.
 
-    python3 kbo_card_preview.py 2026-07-18
+Run it directly to preview a real day without posting anything:
 
-Writes card_results.png, card_box.png and card_standings.png to the cwd.
-Nothing here posts.
+    python3 kbo_card_data.py 2026-07-18 [TEAM]
+
+which writes card_*.png to the cwd — the digest, one box score, the fixtures,
+seven leaderboards and the standings.
 """
 
 import base64
@@ -83,68 +87,6 @@ def card_date(date_str):
     format_date stays abbreviated because the text posts are character-capped."""
     return f'{date.fromisoformat(date_str).day} ' \
            f'{date.fromisoformat(date_str):%B}'
-
-
-# The game-winning hit arrives as one regular Korean string:
-#   '안재석(7회 1사 만루서 우월 홈런)'  ->  An Jae Seok, grand slam to right, 7th
-# Vocabulary below is the complete set observed across 302 game-winning hits
-# from 1 May to 18 July 2026 (every one of which parsed). Anything outside it
-# falls back to the bare name rather than guessing, so the card never prints
-# Korean or an invented description.
-GWH_PATTERN = re.compile(r'^(.+?)\((\d+)회 (\S+?)(?: (\S+?))?서 (\S+) (\S+)\)$')
-GWH_NONE = '없음'                      # tie games have no game-winning hit
-
-GWH_DIRECTION = {
-    '좌월': 'to left', '중월': 'to centre', '우월': 'to right',
-    '좌중월': 'to left-centre', '우중월': 'to right-centre',
-    '좌전': 'to left', '중전': 'up the middle', '우전': 'to right',
-    '좌중간': 'to left-centre', '우중간': 'to right-centre',
-    '좌익수': 'to left', '중견수': 'to centre', '우익수': 'to right',
-    '유격수': 'to short', '1루수': 'to first', '2루수': 'to second',
-    '3루수': 'to third', '투수': 'to the pitcher',
-}
-GWH_TYPE = {
-    '홈런': 'home run', '안타': 'single', '2루타': 'double', '3루타': 'triple',
-    '희생플라이': 'sacrifice fly', '땅볼': 'groundout',
-    '4구': 'walk', '사구': 'hit by pitch',
-}
-# '밀어내기' means the run was forced in, which in English is carried by the
-# phrase itself rather than by a direction.
-GWH_FORCED = '밀어내기'
-GWH_LOADED = '만루'
-
-
-def ordinal(n):
-    """1 -> '1st'. Innings only, so the teens case is academic but cheap."""
-    if 10 <= n % 100 <= 20:
-        suffix = 'th'
-    else:
-        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
-    return f'{n}{suffix}'
-
-
-def describe_gwh(raw):
-    """'안재석(7회 1사 만루서 우월 홈런)' -> ('안재석', 'grand slam to right, 7th').
-    Returns (korean_name, description) or (None, '') if it doesn't parse."""
-    if not raw or raw == GWH_NONE:
-        return None, ''
-    m = GWH_PATTERN.match(raw)
-    if not m:
-        return None, ''
-    name, inning, _outs, runners, direction, kind = m.groups()
-    hit = GWH_TYPE.get(kind)
-    if not hit:
-        return name, ''                 # unknown feat: fall back to the name
-    if direction == GWH_FORCED:
-        phrase = f'bases-loaded {hit}'
-    else:
-        # A bases-loaded home run is a grand slam, and that is what a box score
-        # calls it — the only case where the runners change the noun.
-        if kind == '홈런' and runners == GWH_LOADED:
-            hit = 'grand slam'
-        where = GWH_DIRECTION.get(direction)
-        phrase = f'{hit} {where}' if where else hit
-    return name, f'{phrase}, {ordinal(int(inning))}'
 
 
 def innings_pitched(raw):
@@ -257,31 +199,9 @@ def hr_groups(game, record, roster, added):
                 names.append(name + (f' ({b["hr"]})' if b['hr'] > 1 else ''))
         if names:
             groups.append({**team_marks(code, 'team'),
+                           'team_name': k.TEAMS.get(code, code),
                            'names': ', '.join(names)})
     return groups
-
-
-def gw_line(game, record, roster, added):
-    """'🐻 An Jae Seok — grand slam to right, 7th', or '' if the game had no
-    game-winning hit (a tie) or the string didn't parse.
-
-    etcRecords gives only a Korean name with no player code, so the pcode comes
-    from this game's own batter box score, which carries both."""
-    raw = next((e.get('result') for e in record.get('etcRecords') or []
-                if e.get('how') == '결승타'), '')
-    name_ko, description = describe_gwh(raw)
-    if not name_ko:
-        return ''
-    for side, code in (('away', game['awayTeamCode']),
-                       ('home', game['homeTeamCode'])):
-        for b in record.get('battersBoxscore', {}).get(side, []):
-            if b.get('name') == name_ko:
-                name = k.resolve_name(b.get('playerCode'), name_ko, False,
-                                      roster, added)
-                emoji = k.TEAM_EMOJI.get(code, '')
-                tail = f' — {description}' if description else ''
-                return f'{emoji} {name}{tail}'.strip()
-    return ''                           # name not in this game's box score
 
 
 def box_input(game, record, roster, added):
@@ -357,6 +277,91 @@ def standings_input(rows):
             'gb': '' if r['gb'] in ('0.0', '0', '-') else r['gb'],
         })
     return out
+
+
+# --------------------------------------------------------------------------
+# Alt text. A card is a PNG, so everything it says is invisible to a screen
+# reader unless it is also said here. These read the same data the cards do,
+# so the two cannot drift.
+# --------------------------------------------------------------------------
+
+def results_alt(date_label, rows):
+    parts = [f'Final scores for {date_label}.']
+    for r in rows:
+        line = (f'{r["away_name"]} {r["away_score"]}, '
+                f'{r["home_name"]} {r["home_score"]}')
+        if r.get('note'):
+            line += f' ({r["note"]})'
+        parts.append(line + '.')
+    return ' '.join(parts)
+
+
+def plural(n, word):
+    """'1 error', '2 errors' — alt text is read aloud, so it should read."""
+    return f'{n} {word}' if n == 1 else f'{n} {word}s'
+
+
+def box_alt(date_label, game):
+    parts = [f'Box score for {date_label}.',
+             f'{game["away_name"]} {game["away_score"]}, '
+             f'{game["home_name"]} {game["home_score"]}.']
+    line = game.get('line')
+    if line:
+        innings = max(len(line['away_inn']), len(line['home_inn']))
+        for side, name in (('away', game['away_name']),
+                           ('home', game['home_name'])):
+            got = line[f'{side}_inn']
+            by_inn = ' '.join(
+                str(got[i]) if i < len(got) else ('X' if side == 'home' else '')
+                for i in range(innings)).strip()
+            r, h, e = line[f'{side}_rhe']
+            parts.append(f'{name} by inning: {by_inn}. '
+                         f'{plural(r, "run")}, {plural(h, "hit")}, '
+                         f'{plural(e, "error")}.')
+    for code, name, detail in game.get('pitchers') or ():
+        word = {'W': 'Winning pitcher', 'L': 'Losing pitcher',
+                'S': 'Save'}.get(code, code)
+        parts.append(f'{word}: {name} ({detail}).')
+    groups = game.get('hr') or ()
+    if groups:
+        # One 'Home runs:' for the lot, each team's batters named after it —
+        # the card attributes them by logo, which alt text cannot.
+        listed = '; '.join(f'{g.get("team_name", "")} {g["names"]}'.strip()
+                           for g in groups)
+        parts.append(f'Home runs: {listed}.')
+    return ' '.join(parts)
+
+
+def schedule_alt(date_label, rows, subtitle):
+    parts = [f"Tonight's games, {date_label}."]
+    if subtitle:
+        # 'All games start at 6:30 p.m.' already ends in a stop.
+        parts.append(subtitle if subtitle.endswith('.') else subtitle + '.')
+    for r in rows:
+        line = f'{r["away_name"]} at {r["home_name"]}'
+        if r.get('time'):
+            line += f', {r["time"]}'
+        starters = [s for s in (r.get('away_starter'), r.get('home_starter')) if s]
+        if len(starters) == 2:
+            line += f'. Probable starters {starters[0]} and {starters[1]}'
+        parts.append(line + '.')
+    return ' '.join(parts)
+
+
+def leaders_alt(date_label, title, rows):
+    parts = [f'{title}, season leaders, {date_label}.']
+    parts += [f'{r["rank"]}. {r["name"]}, {r["value"]}.' for r in rows]
+    return ' '.join(parts)
+
+
+def standings_alt(date_label, rows, cut_after):
+    parts = [f'KBO standings, {date_label}.']
+    for i, r in enumerate(rows, start=1):
+        gb = f", {r['gb']} games back" if r.get('gb') else ''
+        parts.append(f'{i}. {r["name"]}, {r["w"]}-{r["l"]}{gb}.')
+        if cut_after and i == cut_after and i < len(rows):
+            parts.append('Postseason line.')
+    return ' '.join(parts)
 
 
 def main(argv):

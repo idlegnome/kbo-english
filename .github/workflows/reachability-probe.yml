@@ -1,0 +1,74 @@
+# Throwaway probe, run by hand only.
+#
+# Question: if this bot ever moved from the Mac Mini to GitHub Actions, would
+# its data sources still answer? The runners are not in Korea, and both Naver
+# Sports and the KBO English site are Korean services that may or may not serve
+# a foreign IP the same way. That is the one unknown that could sink the move,
+# and it cannot be tested from Seoul.
+#
+# Run it from the Actions tab (Run workflow). It posts nothing, needs no
+# secrets, and touches no state. Delete this file once the question is settled.
+
+name: reachability probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Where is this runner
+        run: curl -s https://ipinfo.io/json | head -20
+
+      - name: Naver — schedule (the bot's main source)
+        run: |
+          url='https://api-gw.sports.naver.com/schedule/games?upperCategoryId=kbaseball&categoryId=kbo&fromDate=2026-07-18&toDate=2026-07-18'
+          code=$(curl -s -o /tmp/sched.json -w '%{http_code}' -A 'Mozilla/5.0' "$url")
+          echo "HTTP $code, $(wc -c < /tmp/sched.json) bytes"
+          python3 -c "import json;d=json.load(open('/tmp/sched.json'));g=d['result']['games'];print('games:',len(g));print('first:',g[0]['gameId'],g[0]['awayTeamCode'],'@',g[0]['homeTeamCode'])"
+
+      - name: Naver — box score record
+        run: |
+          url='https://api-gw.sports.naver.com/schedule/games/20260718OBNC02026/record'
+          code=$(curl -s -o /tmp/rec.json -w '%{http_code}' -A 'Mozilla/5.0' "$url")
+          echo "HTTP $code, $(wc -c < /tmp/rec.json) bytes"
+          python3 -c "import json;d=json.load(open('/tmp/rec.json'));print('scoreBoard:',d['result']['recordData']['scoreBoard'])"
+
+      - name: KBO English — standings page
+        run: |
+          url='https://eng.koreabaseball.com/Standings/TeamStandings.aspx'
+          code=$(curl -s -o /tmp/st.html -w '%{http_code}' -A 'Mozilla/5.0' "$url")
+          echo "HTTP $code, $(wc -c < /tmp/st.html) bytes"
+          grep -c -i 'samsung\|doosan' /tmp/st.html || echo 'NO TEAM NAMES FOUND — likely blocked or restructured'
+
+      - name: Club logo CDN
+        run: |
+          code=$(curl -s -o /tmp/ob.png -w '%{http_code}' 'https://sports-phinf.pstatic.net/team/kbo/default/OB.png')
+          echo "HTTP $code, $(wc -c < /tmp/ob.png) bytes"
+
+      # The renderer itself: Chrome is preinstalled on ubuntu-latest, and the
+      # font is bundled in the repo, so this proves a card can be produced on a
+      # runner with no font installation step at all.
+      - name: Render a card
+        run: |
+          python3 -m pip install --quiet pillow
+          python3 - <<'PY'
+          import kbo_card
+          print('chrome found at:', kbo_card.find_chrome())
+          rows = [{'team_emoji': '', 'team_logo': '', 'name': 'Samsung Lions',
+                   'w': '53', 'l': '33', 'gb': ''},
+                  {'team_emoji': '', 'team_logo': '', 'name': 'KT Wiz',
+                   'w': '51', 'l': '35', 'gb': '2.0'}]
+          path, size = kbo_card.render_standings_card('18 July', rows,
+                                                      'probe.png', cut_after=None)
+          print('rendered', path, size)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-card
+          path: probe.png
+          if-no-files-found: warn
