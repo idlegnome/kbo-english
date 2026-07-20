@@ -353,7 +353,7 @@ def compose_standings(date_str, rows):
         lines.append(f'{r["rank"]}. {emoji} {name} {r["w"]}-{r["l"]}{gb}'.strip())
         if r['rank'] == PLAYOFF_SPOTS:
             lines.append('— postseason —')
-    body = (f'⚾🇰🇷 Standings · {format_date(date_str)}\n(W-L · games back)\n\n'
+    body = (f'🇰🇷⚾ Standings · {format_date(date_str)}\n(W-L · games back)\n\n'
             + '\n'.join(lines) + '\n\n')
     return [(body, HASHTAGS)]
 
@@ -451,7 +451,7 @@ def compose_leaders(date_str, data, roster, added):
     """Season-leaders thread: leaderboard blocks packed into as few posts as fit,
     only the first post carrying the title and the hashtags. Returns a list of
     (body, tags) segments, or [] if no leaderboard has data."""
-    title = f'⚾🇰🇷 KBO season leaders · {format_date(date_str)}'
+    title = f'🇰🇷⚾ KBO season leaders · {format_date(date_str)}'
     blocks = []
     for key, label in HITTING_LEADERS + PITCHING_LEADERS:
         rows = leader_rows(key, data.get(key, []), roster, added)
@@ -483,7 +483,7 @@ def compose_leaders(date_str, data, roster, added):
 def compose_results(date_str, finals, cancelled=()):
     """Final-scores digest, with a Postponed section listing any cancelled games
     rather than dropping them."""
-    parts = [f'⚾🇰🇷 Final scores · {format_date(date_str)}']
+    parts = [f'🇰🇷⚾ Final scores · {format_date(date_str)}']
     if finals:
         parts.append('\n'.join(result_line(g) for g in by_start(finals)))
     if cancelled:
@@ -618,7 +618,7 @@ def compose_schedule(date_str, items, roster):
     # the per-line times; otherwise show the time on each line.
     times = {format_time(g['gameDateTime']) for g in games}
     uniform = len(times) == 1 and len(games) > 1
-    head = f'⚾🇰🇷 Tonight’s games · {format_date(date_str)}'
+    head = f'🇰🇷⚾ Tonight’s games · {format_date(date_str)}'
     if uniform:
         head += f' (all games start at {next(iter(times))})'
     lines = '\n'.join(schedule_line(g, show_time=not uniform) for g in games)
@@ -627,7 +627,7 @@ def compose_schedule(date_str, items, roster):
 
     if any(it['away'] or it['home'] for it in items):
         pitch_lines = [starters_line(it, roster) for it in items]
-        header = '⚾🇰🇷 Probable starters\n(W-L, E.R.A.)\n\n'
+        header = '🇰🇷⚾ Probable starters\n(W-L, E.R.A.)\n\n'
         # Starters replies carry no hashtags — only the matchups post is tagged.
         for body in pack_lines(pitch_lines, header):
             segments.append((body, []))

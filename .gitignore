@@ -19,3 +19,9 @@ venv/
 
 # macOS
 .DS_Store
+
+# Preview cards (regenerate with kbo_card_preview.py)
+card_*.png
+
+# Club logos: third-party marks, fetched and cached at runtime
+logos/
