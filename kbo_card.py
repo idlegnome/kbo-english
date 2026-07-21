@@ -8,7 +8,8 @@ to content, so no height is ever guessed.
 
     render_results_card()    the daily final-scores digest
     render_box_score_card()  one finished game, with a traditional line score
-    render_schedule_card()   tonight's fixtures and their probable starters
+    render_schedule_card()   tonight's fixtures and their start times
+    render_starters_card()   tonight's probable starting pitchers
     render_leaders_card()    one leaderboard's top three
     render_standings_card()  the league table, with the postseason cut line
 
@@ -290,7 +291,7 @@ def _fixture_block(g):
             f'{starters}</div>')
 
 
-def render_schedule_card(date_label, games, out_path, title="Tonight's Games",
+def render_schedule_card(date_label, games, out_path, title='Tonight’s Games',
                          subtitle=''):
     """Tonight's fixtures with probable starters. `games` is a list of dicts:
         {away_emoji/away_logo, away_name, away_starter, home_..., time}
@@ -302,6 +303,59 @@ def render_schedule_card(date_label, games, out_path, title="Tonight's Games",
     body = (f'<div class="card">{_head(title, date_label, subtitle=subtitle)}'
             f'{"".join(_fixture_block(g) for g in games)}{FOOTER}</div>')
     return _shoot(_document(SCHEDULE_CSS, body), out_path)
+
+
+# --------------------------------------------------------------------------
+# Probable starters
+# --------------------------------------------------------------------------
+
+# Mirrored columns, echoing the fixtures card's away/home split: each side
+# aligns to the gutter, so the two records meet in the middle and the eye can
+# compare them without crossing the card.
+STARTERS_CSS = f"""
+.gm{{padding:15px 0 13px}}
+.gm + .gm{{border-top:1px solid {RULE}}}
+.duo{{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+  column-gap:14px}}
+.duo .a{{text-align:right}}
+.duo .h{{text-align:left}}
+.duo .sep{{color:{RED};font-size:13px}}
+.duo .nm{{font-size:16px;font-weight:700;margin-top:5px}}
+.duo .rec{{font-size:12px;color:{MUTED};margin-top:3px;letter-spacing:0.04em}}
+.duo .tbd{{font-weight:400;color:{MUTED}}}
+"""
+
+
+def _starter_col(g, side, cls):
+    """One side of a fixture: the club's mark above its probable starter and
+    that pitcher's season line. A starter who hasn't been named shows TBD, set
+    in regular weight so it reads as an absence rather than a surname."""
+    name = g.get(f'{side}_pitcher') or 'TBD'
+    nm_cls = 'nm' if g.get(f'{side}_pitcher') else 'nm tbd'
+    rec = g.get(f'{side}_record') or ''
+    return (f'<div class="{cls}">{_mark(g, side, MARK_ROW)}'
+            f'<div class="{nm_cls}">{_esc(name)}</div>'
+            f'<div class="rec">{_esc(rec)}</div></div>')
+
+
+def render_starters_card(date_label, games, out_path,
+                         title='Probable Starters',
+                         subtitle='W-L and E.R.A. this season'):
+    """The probable-starters post. `games` is a list of dicts:
+        {away_emoji/away_logo, away_pitcher, away_record, home_...}
+    `record` is '2-4, 4.69', or '' when the API has no season line for him yet —
+    the card sets name and record in separate rows, so the brackets the text
+    post uses would only be noise here. Returns (path, (w, h))."""
+    if not games:
+        raise CardRenderError('no starters to render')
+    blocks = ''.join(
+        f'<div class="gm"><div class="duo">'
+        f'{_starter_col(g, "away", "a")}'
+        f'<span class="sep">&middot;</span>'
+        f'{_starter_col(g, "home", "h")}</div></div>' for g in games)
+    body = (f'<div class="card">{_head(title, date_label, subtitle=subtitle)}'
+            f'{blocks}{FOOTER}</div>')
+    return _shoot(_document(STARTERS_CSS, body), out_path)
 
 
 # --------------------------------------------------------------------------

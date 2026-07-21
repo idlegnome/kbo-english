@@ -12,7 +12,7 @@ Run it directly to preview a real day without posting anything:
     python3 kbo_card_data.py 2026-07-18 [TEAM]
 
 which writes card_*.png to the cwd — the digest, one box score, the fixtures,
-seven leaderboards and the standings.
+the probable starters, seven leaderboards and the standings.
 """
 
 import base64
@@ -229,16 +229,20 @@ def starter_text(starter, roster):
     return text
 
 
-def schedule_input(games, roster):
+def schedule_input(games, roster, with_starters=True):
     """Fixtures with probable starters. Returns (rows, subtitle): when every
     game starts at the same time the subtitle carries it once and the rows drop
-    it, matching what compose_schedule does for the text post."""
+    it, matching what compose_schedule does for the text post.
+
+    `with_starters=False` leaves the pitchers off, for the fixtures card that
+    now threads a dedicated starters card beneath it — printing them in both
+    places would say the same thing twice in one thread."""
     games = k.by_start(games)
     times = {k.format_time(g['gameDateTime']) for g in games}
     uniform = len(times) == 1 and len(games) > 1
     rows = []
     for g in games:
-        away, home = k.fetch_starters(g['gameId'])
+        away, home = k.fetch_starters(g['gameId']) if with_starters else (None, None)
         rows.append({
             **team_marks(g['awayTeamCode'], 'away'),
             'away_name': k.TEAMS.get(g['awayTeamCode'], g['awayTeamCode']),
@@ -251,6 +255,39 @@ def schedule_input(games, roster):
     subtitle = (f'All games start at {next(iter(times))}' if uniform
                 else '')
     return rows, subtitle
+
+
+def split_record(text):
+    """'Park Jun Young (2-4, 4.69)' -> ('Park Jun Young', '2-4, 4.69').
+
+    starter_text() builds the bracketed form the text post wants; the starters
+    card sets name and record in separate rows, so it needs the pieces back.
+    A name with no season line returns ('Park Jun Young', '')."""
+    if not text:
+        return '', ''
+    if text.endswith(')') and ' (' in text:
+        name, _, rec = text.rpartition(' (')
+        return name, rec[:-1]
+    return text, ''
+
+
+def starters_input(games, roster):
+    """One row per fixture for the probable-starters card: each side's pitcher
+    and his season W-L and E.R.A., split apart for the card's two rows."""
+    rows = []
+    for g in k.by_start(games):
+        away, home = k.fetch_starters(g['gameId'])
+        away_name, away_rec = split_record(starter_text(away, roster))
+        home_name, home_rec = split_record(starter_text(home, roster))
+        rows.append({
+            **team_marks(g['awayTeamCode'], 'away'),
+            'away_name': k.TEAMS.get(g['awayTeamCode'], g['awayTeamCode']),
+            'away_pitcher': away_name, 'away_record': away_rec,
+            **team_marks(g['homeTeamCode'], 'home'),
+            'home_name': k.TEAMS.get(g['homeTeamCode'], g['homeTeamCode']),
+            'home_pitcher': home_name, 'home_record': home_rec,
+        })
+    return rows
 
 
 def leaders_input(rows):
@@ -332,8 +369,22 @@ def box_alt(date_label, game):
     return ' '.join(parts)
 
 
+def starters_alt(date_label, rows):
+    parts = [f'Probable starting pitchers, {date_label}.']
+    for r in rows:
+        for side in ('away', 'home'):
+            name = r.get(f'{side}_pitcher')
+            if not name:
+                parts.append(f'{r[f"{side}_name"]}, starter not yet named.')
+                continue
+            rec = r.get(f'{side}_record')
+            parts.append(f'{r[f"{side}_name"]}, {name}'
+                         + (f', {rec}.' if rec else '.'))
+    return ' '.join(parts)
+
+
 def schedule_alt(date_label, rows, subtitle):
-    parts = [f"Tonight's games, {date_label}."]
+    parts = [f'Tonight’s games, {date_label}.']
     if subtitle:
         # 'All games start at 6:30 p.m.' already ends in a stop.
         parts.append(subtitle if subtitle.endswith('.') else subtitle + '.')
@@ -415,10 +466,13 @@ def main(argv):
     next_day = date.fromisoformat(date_str) + timedelta(days=1)
     fixtures = k.fetch_games(str(next_day))
     if fixtures:
-        rows, subtitle = schedule_input(fixtures, roster)
+        rows, subtitle = schedule_input(fixtures, roster, with_starters=False)
         print(kbo_card.render_schedule_card(card_date(str(next_day)), rows,
                                             'card_schedule.png',
                                             subtitle=subtitle))
+        print(kbo_card.render_starters_card(card_date(str(next_day)),
+                                            starters_input(fixtures, roster),
+                                            'card_starters.png'))
     else:
         print(f'no fixtures on {next_day} (KBO rests on Mondays) — skipped')
 

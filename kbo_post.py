@@ -5,17 +5,19 @@ Post English-language KBO League updates to Bluesky (@kbo-english.bsky.social).
 Four post types:
 
   schedule   A pre-game thread: (1) tonight's matchups and start times (KST),
-             with (2) the probable starting pitchers threaded underneath.
+             with (2) the probable starting pitchers threaded underneath, each
+             on its own card.
   results    A nightly final-scores digest (every game's final in one post),
              then a compact box score threaded underneath per game.
   standings  A daily rank / W-L / games-back table (from the KBO English site).
   leaders    A weekly season-leaders thread: a lead post, then one reply per
              leaderboard (top 3), romanised via the KBO English player pages.
 
-Every post also carries a rendered PNG card of the same information, built by
-kbo_card via kbo_card_data. Cards are strictly additive: the text is unchanged
-and complete on its own, each card is described in alt text, and a rendering
-failure drops the image rather than the post.
+Every post is a rendered PNG card, built by kbo_card via kbo_card_data. The post
+text is the headline alone — the card carries the detail and its alt text
+repeats that detail in full, so the information is never set twice in one post.
+If a card fails to render the post falls back to the complete text body it used
+before cards existed, which is why the compose_* functions still build one.
 
 schedule/results/leaders draw their game and stat data from Naver Sports' public
 API; standings and the leaders' name romanisation read the KBO English site.
@@ -691,13 +693,31 @@ def seg_parts(segment):
     return body, tags, card
 
 
-def with_card(segments, index, card):
-    """Return `segments` with `card` attached to the segment at `index`."""
+def headline_of(body):
+    """A post body's first line — its headline. Everything below the first line
+    is the detail the card now carries."""
+    return body.split('\n', 1)[0].rstrip() + '\n\n'
+
+
+def card_only(segment, card):
+    """A segment reduced to its headline, with `card` attached: the card shows
+    the detail and its alt text repeats it in full, so posting the text as well
+    would say everything twice in one post.
+
+    A segment whose card failed to render keeps its complete text, which is what
+    the bot posted before cards existed. That fallback is the whole reason the
+    compose_* functions still build full bodies."""
+    body, tags, _ = seg_parts(segment)
     if not card:
-        return segments
+        return (body, tags, None)
+    return (headline_of(body), tags, card)
+
+
+def with_card(segments, index, card):
+    """Return `segments` with `card` attached to the segment at `index`, that
+    segment reduced to its headline."""
     out = list(segments)
-    body, tags, _ = seg_parts(out[index])
-    out[index] = (body, tags, card)
+    out[index] = card_only(out[index], card)
     return out
 
 
@@ -730,22 +750,40 @@ def box_score_segments(finals, roster, added):
             lambda path, game=game, label=label:
                 kbo_card.render_box_score_card(label, game, path),
             data.box_alt(label, game))
-        segments.append((body, [], card))
+        segments.append(card_only((body, []), card))
     return segments
 
 
-def attach_schedule_card(date_str, playable, roster, segments):
-    """Tonight's fixtures and their probable starters, on one card. The text
-    post splits those across a post and a reply; the card holds both."""
+def attach_schedule_cards(date_str, playable, roster, segments):
+    """The schedule thread, one card per post: tonight's fixtures, then the
+    probable starters threaded beneath them.
+
+    The fixtures card leaves the pitchers off, because the reply below it is
+    given over to them. `segments` is what compose_schedule built — a matchups
+    post followed by one or more starters replies — and each is reduced to its
+    headline as its card renders. If the starters card fails, its replies keep
+    the text they already had."""
     import kbo_card
     import kbo_card_data as data
-    rows, subtitle = data.schedule_input(playable, roster)
     label = data.card_date(date_str)
-    card = build_card(
+
+    rows, subtitle = data.schedule_input(playable, roster, with_starters=False)
+    fixtures = build_card(
         lambda path: kbo_card.render_schedule_card(label, rows, path,
                                                    subtitle=subtitle),
         data.schedule_alt(label, rows, subtitle))
-    return with_card(segments, 0, card)
+    out = with_card(segments, 0, fixtures)
+    if len(out) == 1:                       # no starter announced for any game
+        return out
+
+    starters = data.starters_input(playable, roster)
+    card = build_card(
+        lambda path: kbo_card.render_starters_card(label, starters, path),
+        data.starters_alt(label, starters))
+    if not card:
+        return out
+    # One card replaces however many replies the text needed to fit the limit.
+    return out[:1] + [card_only(out[1], card)]
 
 
 def attach_standings_card(date_str, rows, segments):
@@ -964,7 +1002,7 @@ def main():
             away, home = fetch_starters(g['gameId'])
             items.append({'game': g, 'away': away, 'home': home})
         segments = compose_schedule(date_str, items, roster)
-        segments = attach_schedule_card(date_str, playable, roster, segments)
+        segments = attach_schedule_cards(date_str, playable, roster, segments)
         emit('schedule', date_str, segments, dry_run, history, len(playable))
         return
 
