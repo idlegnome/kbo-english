@@ -229,15 +229,14 @@ def starter_text(starter, roster):
     return text
 
 
-def schedule_input(games, roster):
+def schedule_input(games):
     """Fixtures alone. Returns (rows, subtitle): when every game starts at the
     same time the subtitle carries it once and the rows drop it, matching what
     compose_schedule does for the text post.
 
     The pitchers are deliberately absent: they get their own card, threaded
     beneath this one, and printing them in both places would say the same thing
-    twice in one thread. `roster` is unused here for that reason, and kept only
-    so both card-input builders take the same pair of arguments."""
+    twice in one thread. Hence no `roster` argument, unlike starters_input()."""
     games = k.by_start(games)
     times = {k.format_time(g['gameDateTime']) for g in games}
     uniform = len(times) == 1 and len(games) > 1
@@ -461,7 +460,7 @@ def main(argv):
     next_day = date.fromisoformat(date_str) + timedelta(days=1)
     fixtures = k.fetch_games(str(next_day))
     if fixtures:
-        rows, subtitle = schedule_input(fixtures, roster)
+        rows, subtitle = schedule_input(fixtures)
         print(kbo_card.render_schedule_card(card_date(str(next_day)), rows,
                                             'card_schedule.png',
                                             subtitle=subtitle))

@@ -767,7 +767,7 @@ def attach_schedule_cards(date_str, playable, roster, segments):
     import kbo_card_data as data
     label = data.card_date(date_str)
 
-    rows, subtitle = data.schedule_input(playable, roster)
+    rows, subtitle = data.schedule_input(playable)
     fixtures = build_card(
         lambda path: kbo_card.render_schedule_card(label, rows, path,
                                                    subtitle=subtitle),
