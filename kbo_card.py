@@ -254,7 +254,7 @@ def render_results_card(date_label, games, out_path, title='Final Scores'):
 
 
 # --------------------------------------------------------------------------
-# Tonight's games + probable starters
+# Tonight's games
 # --------------------------------------------------------------------------
 
 SCHEDULE_CSS = f"""
@@ -265,12 +265,6 @@ SCHEDULE_CSS = f"""
 .row .a{{text-align:right;font-weight:700}}
 .row .h{{text-align:left;font-weight:700}}
 .row .mid{{color:{MUTED};white-space:nowrap;font-size:13px}}
-.sp{{display:grid;grid-template-columns:1fr auto 1fr;column-gap:16px;
-  margin-top:7px;font-size:12px;color:{MUTED}}}
-.sp .a{{text-align:right}}
-.sp .h{{text-align:left}}
-.sp .mid{{white-space:nowrap}}
-.sp .sep{{color:{RED}}}
 """
 
 
@@ -280,24 +274,16 @@ def _fixture_block(g):
     home = (f'<span class="h">{_mark(g, "home", MARK_ROW)} '
             f'{_esc(g["home_name"])}</span>')
     mid = f'<span class="mid">{_esc(g.get("time") or "@")}</span>'
-    starters = ''
-    if g.get('away_starter') or g.get('home_starter'):
-        # A middot, not a second '@': the matchup row above already says it.
-        starters = (f'<div class="sp"><span class="a">'
-                    f'{_esc(g.get("away_starter") or "TBD")}</span>'
-                    f'<span class="mid sep">&middot;</span><span class="h">'
-                    f'{_esc(g.get("home_starter") or "TBD")}</span></div>')
-    return (f'<div class="g"><div class="row">{away}{mid}{home}</div>'
-            f'{starters}</div>')
+    return f'<div class="g"><div class="row">{away}{mid}{home}</div></div>'
 
 
 def render_schedule_card(date_label, games, out_path, title='Tonight’s Games',
                          subtitle=''):
-    """Tonight's fixtures with probable starters. `games` is a list of dicts:
-        {away_emoji/away_logo, away_name, away_starter, home_..., time}
+    """Tonight's fixtures. `games` is a list of dicts:
+        {away_emoji/away_logo, away_name, home_..., time}
     `time` is '6:30 p.m.' per fixture, or '' when every game starts together and
-    the caller has put the time in `subtitle` instead. A starter that hasn't
-    been announced shows TBD. Returns (path, (w, h))."""
+    the caller has put the time in `subtitle` instead. The probable starters are
+    render_starters_card's job, in its own post. Returns (path, (w, h))."""
     if not games:
         raise CardRenderError('no fixtures to render')
     body = (f'<div class="card">{_head(title, date_label, subtitle=subtitle)}'
@@ -311,7 +297,9 @@ def render_schedule_card(date_label, games, out_path, title='Tonight’s Games',
 
 # Mirrored columns, echoing the fixtures card's away/home split: each side
 # aligns to the gutter, so the two records meet in the middle and the eye can
-# compare them without crossing the card.
+# compare them without crossing the card. The gutter holds '@', not a middot:
+# this card travels in its own post now, so nothing above it says which pitcher
+# is the visitor and column position alone gives the reader no key.
 STARTERS_CSS = f"""
 .gm{{padding:15px 0 13px}}
 .gm + .gm{{border-top:1px solid {RULE}}}
@@ -319,8 +307,9 @@ STARTERS_CSS = f"""
   column-gap:14px}}
 .duo .a{{text-align:right}}
 .duo .h{{text-align:left}}
-.duo .sep{{color:{RED};font-size:13px}}
-.duo .nm{{font-size:16px;font-weight:700;margin-top:5px}}
+.duo .sep{{color:{MUTED};font-size:13px;align-self:start;line-height:19px;
+  margin-top:{MARK_ROW + 5}px}}
+.duo .nm{{font-size:16px;font-weight:700;margin-top:5px;line-height:19px}}
 .duo .rec{{font-size:12px;color:{MUTED};margin-top:3px;letter-spacing:0.04em}}
 .duo .tbd{{font-weight:400;color:{MUTED}}}
 """
@@ -351,7 +340,7 @@ def render_starters_card(date_label, games, out_path,
     blocks = ''.join(
         f'<div class="gm"><div class="duo">'
         f'{_starter_col(g, "away", "a")}'
-        f'<span class="sep">&middot;</span>'
+        f'<span class="sep">@</span>'
         f'{_starter_col(g, "home", "h")}</div></div>' for g in games)
     body = (f'<div class="card">{_head(title, date_label, subtitle=subtitle)}'
             f'{blocks}{FOOTER}</div>')
