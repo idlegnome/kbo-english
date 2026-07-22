@@ -52,6 +52,7 @@ Usage:
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -164,6 +165,14 @@ LEADER_FIELDS = {'HITTER': 'offenseHra,offenseHr,offenseRbi',
 # Rate-stat boards are limited to qualified players (batting-title / ERA-title);
 # counting-stat boards (HR, RBI, W, SV, K) include everyone.
 QUALIFIED_ONLY = {'hitterHra', 'pitcherEra'}
+
+
+def write_json_atomic(path, data, **dumps_kwargs):
+    """Write JSON via a sibling temp file and an atomic rename, so a crash
+    mid-write can never leave a truncated history, roster or state file behind."""
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(data, **dumps_kwargs))
+    os.replace(tmp, path)
 
 
 def team_label(code):
@@ -877,7 +886,7 @@ def archive_results(date_str, finals, cancelled):
         'postponed': [{'away': g['awayTeamCode'], 'home': g['homeTeamCode']}
                       for g in by_start(cancelled)],
     }
-    RESULTS_ARCHIVE.write_text(json.dumps(arch, ensure_ascii=False, indent=2, sort_keys=True))
+    write_json_atomic(RESULTS_ARCHIVE, arch, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def results_candidates(argv):
@@ -932,7 +941,7 @@ def emit(mode, date_str, segments, dry_run, history, count):
     post_thread(segments)
     history[f'{mode}:{date_str}'] = {
         'posted_at': datetime.now(timezone.utc).isoformat(), 'games': count}
-    HISTORY.write_text(json.dumps(history, ensure_ascii=False, indent=2))
+    write_json_atomic(HISTORY, history, ensure_ascii=False, indent=2)
     print('Posted.')
     return True
 
@@ -973,8 +982,8 @@ def main():
         segments = leaders_segments(date_str, data, roster, added)
         if added:
             if not dry_run:
-                ROSTER.write_text(json.dumps(roster, ensure_ascii=False,
-                                             indent=2, sort_keys=True))
+                write_json_atomic(ROSTER, roster, ensure_ascii=False,
+                                  indent=2, sort_keys=True)
             for pc, entry in added:
                 warn = ('  ⚠ NEW IMPORT — if East-Asian, add to KEEP_SURNAME_FIRST'
                         if entry.get('foreign') else '')
@@ -1019,8 +1028,8 @@ def main():
     segments += box_score_segments(finals, roster, added)
     if added:
         if not dry_run:
-            ROSTER.write_text(json.dumps(roster, ensure_ascii=False,
-                                         indent=2, sort_keys=True))
+            write_json_atomic(ROSTER, roster, ensure_ascii=False,
+                              indent=2, sort_keys=True)
         for pc, entry in added:
             warn = ('  ⚠ NEW IMPORT — if East-Asian, add to KEEP_SURNAME_FIRST'
                     if entry.get('foreign') else '')
@@ -1039,7 +1048,7 @@ def record_run(mode):
         state = json.loads(STATE.read_text()) if STATE.exists() else {}
         state['last_run_at'] = datetime.now(timezone.utc).isoformat()
         state['last_run_mode'] = mode
-        STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True))
+        write_json_atomic(STATE, state, ensure_ascii=False, indent=2, sort_keys=True)
     except Exception as exc:                    # noqa: BLE001 - heartbeat is best-effort
         print(f'(could not write heartbeat: {exc})')
 

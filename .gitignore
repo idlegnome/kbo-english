@@ -25,3 +25,6 @@ card_*.png
 
 # Club logos: third-party marks, fetched and cached at runtime
 logos/
+
+# Leftover from an interrupted atomic JSON write (write_json_atomic)
+*.json.tmp
