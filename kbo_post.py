@@ -604,7 +604,9 @@ def compose_schedule(date_str, items, roster):
 
 
 def plain_text(body, tags):
-    return body.rstrip('\n') + tags_footer(tags)
+    body = body.rstrip('\n')
+    footer = tags_footer(tags)
+    return body + footer if body else footer.lstrip('\n')
 
 
 def grapheme_len(s):
@@ -652,10 +654,12 @@ def keychain_password(account, service):
 
 def build_tb(body, tags):
     from atproto import client_utils
+    body = body.rstrip('\n')
     tb = client_utils.TextBuilder()
-    tb.text(body.rstrip('\n'))
+    tb.text(body)
     if tags:
-        tb.text('\n\n')
+        if body:                 # a tags-only post starts with the tags, no gap
+            tb.text('\n\n')
         for i, tag in enumerate(tags):
             if i:
                 tb.text(' ')
@@ -693,16 +697,11 @@ def seg_parts(segment):
     return body, tags, card
 
 
-def headline_of(body):
-    """A post body's first line — its headline. Everything below the first line
-    is the detail the card now carries."""
-    return body.split('\n', 1)[0].rstrip() + '\n\n'
-
-
 def card_only(segment, card):
-    """A segment reduced to its headline, with `card` attached: the card shows
-    the detail and its alt text repeats it in full, so posting the text as well
-    would say everything twice in one post.
+    """A segment stripped of its body text, with `card` attached: the card
+    carries the whole post (its title included) and its alt text repeats it in
+    full, so the only text the post needs is its hashtags. Everything else lives
+    on the card.
 
     A segment whose card failed to render keeps its complete text, which is what
     the bot posted before cards existed. That fallback is the whole reason the
@@ -710,12 +709,12 @@ def card_only(segment, card):
     body, tags, _ = seg_parts(segment)
     if not card:
         return (body, tags, None)
-    return (headline_of(body), tags, card)
+    return ('', tags, card)
 
 
 def with_card(segments, index, card):
     """Return `segments` with `card` attached to the segment at `index`, that
-    segment reduced to its headline."""
+    segment stripped down to its hashtags."""
     out = list(segments)
     out[index] = card_only(out[index], card)
     return out
@@ -801,12 +800,14 @@ def attach_standings_card(date_str, rows, segments):
 
 
 def leaders_segments(date_str, raw, roster, added):
-    """A lead post, then one reply per leaderboard carrying that board's card.
+    """One post per leaderboard, each carrying that board's card.
 
-    Each board appears once. Where a card renders, the reply is the card and
-    its title, with the standings themselves in the alt text; where rendering
-    failed, the reply falls back to the old text block so the numbers still go
-    out. Returns [] if no board has data."""
+    Each board appears once. Where a card renders, the post is the card alone —
+    its title and date are on the card, the standings are in the alt text — so
+    the body is empty; where rendering failed, the post falls back to the old
+    text block so the numbers still go out. The first board carries the hashtags
+    (there is no separate intro post: the date and 'season leaders' framing are
+    on every card). Returns [] if no board has data."""
     import kbo_card
     import kbo_card_data as data
     label = data.card_date(date_str)
@@ -816,18 +817,16 @@ def leaders_segments(date_str, raw, roster, added):
         if not top:
             continue
         rows = data.leaders_input(top)
+        tags = HASHTAGS if not boards else []   # first board is the thread root
         card = build_card(
             lambda path, title=title, rows=rows:
                 kbo_card.render_leaders_card(label, title, rows, path),
             data.leaders_alt(label, title, rows))
         if card:
-            boards.append((f'{title}\n\n', [], card))
+            boards.append(('', tags, card))
         else:
-            boards.append((leader_block(title, top) + '\n\n', [], None))
-    if not boards:
-        return []
-    lead = f'🇰🇷⚾ KBO season leaders · {format_date(date_str)}\n\n'
-    return [(lead, HASHTAGS)] + boards
+            boards.append((leader_block(title, top) + '\n\n', tags, None))
+    return boards
 
 
 def post_thread(segments):
