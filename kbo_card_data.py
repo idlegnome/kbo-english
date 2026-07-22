@@ -147,6 +147,17 @@ def results_input(games, records):
     return out
 
 
+def postponed_input(cancelled):
+    """Rained-out games -> the results card's postponed rows: marks and names
+    only, no scores."""
+    return [{
+        **team_marks(g['awayTeamCode'], 'away'),
+        'away_name': k.TEAMS.get(g['awayTeamCode'], g['awayTeamCode']),
+        **team_marks(g['homeTeamCode'], 'home'),
+        'home_name': k.TEAMS.get(g['homeTeamCode'], g['homeTeamCode']),
+    } for g in k.by_start(cancelled)]
+
+
 def line_input(game, record):
     """The scoreBoard block -> kbo_card's line-score shape, or None if Naver
     didn't return one (older games occasionally lack it)."""
@@ -319,7 +330,7 @@ def standings_input(rows):
 # so the two cannot drift.
 # --------------------------------------------------------------------------
 
-def results_alt(date_label, rows):
+def results_alt(date_label, rows, postponed=()):
     parts = [f'Final scores for {date_label}.']
     for r in rows:
         line = (f'{r["away_name"]} {r["away_score"]}, '
@@ -327,6 +338,10 @@ def results_alt(date_label, rows):
         if r.get('note'):
             line += f' ({r["note"]})'
         parts.append(line + '.')
+    if postponed:
+        listed = '; '.join(f'{p["away_name"]} at {p["home_name"]}'
+                           for p in postponed)
+        parts.append(f'Postponed: {listed}.')
     return ' '.join(parts)
 
 
@@ -413,8 +428,11 @@ def main(argv):
     date_str = argv[1] if len(argv) > 1 else str(date.today() - timedelta(days=1))
     roster, added = k.load_roster(), []
 
-    games = [g for g in k.fetch_games(date_str) if g.get('statusCode') == k.FINAL]
-    if not games:
+    all_games = k.fetch_games(date_str)
+    games = [g for g in all_games
+             if g.get('statusCode') == k.FINAL and not g.get('cancel')]
+    cancelled = [g for g in all_games if g.get('cancel')]
+    if not games and not cancelled:
         print(f'no finished games on {date_str}')
         return 1
     label = card_date(date_str)
@@ -429,7 +447,8 @@ def main(argv):
             records[g['gameId']] = rec
 
     print(kbo_card.render_results_card(label, results_input(games, records),
-                                       'card_results.png'))
+                                       'card_results.png',
+                                       postponed=postponed_input(cancelled)))
 
     # Box score: the game named by a second argument (a team code such as OB,
     # or a full gameId), else the first game of the day that had a home run.
@@ -445,7 +464,7 @@ def main(argv):
         if hit:
             pick, record = g, rec
             break
-    if not record:                       # nothing matched — fall back to game 1
+    if not record and games:             # nothing matched — fall back to game 1
         pick = k.by_start(games)[0]
         record = records.get(pick['gameId'])
     if not record:

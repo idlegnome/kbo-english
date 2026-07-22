@@ -224,6 +224,8 @@ RESULTS_CSS = f"""
 .row .h{{text-align:left}}
 .row .a,.row .h{{font-weight:700}}
 .row .s{{color:{MUTED};white-space:nowrap;letter-spacing:0.04em}}
+.row.ppd .a,.row.ppd .h{{font-weight:400}}
+.row.ppd .s{{font-size:13px}}
 .note{{margin-top:9px;text-align:center;font-size:12px;color:{MUTED};
   letter-spacing:0.04em}}
 """
@@ -241,15 +243,31 @@ def _game_block(g):
     return f'<div class="g"><div class="row">{away}{score}{home}</div>{note}</div>'
 
 
-def render_results_card(date_label, games, out_path, title='Final Scores'):
+def _postponed_block(g):
+    """A rained-out fixture: 'postponed' sits where the score would, and the
+    clubs are set in regular weight so the row reads as an absence rather than
+    a result (the same convention as the starters card's TBD)."""
+    away = (f'<span class="a">{_mark(g, "away", MARK_ROW)} '
+            f'{_esc(g["away_name"])}</span>')
+    home = (f'<span class="h">{_mark(g, "home", MARK_ROW)} '
+            f'{_esc(g["home_name"])}</span>')
+    mid = '<span class="s">postponed</span>'
+    return f'<div class="g"><div class="row ppd">{away}{mid}{home}</div></div>'
+
+
+def render_results_card(date_label, games, out_path, title='Final Scores',
+                        postponed=()):
     """The daily digest. `games` is a list of dicts:
         {away_emoji, away_name, away_score, home_emoji, home_name, home_score,
          note}  — note is a short tag ('rout', 'shutout') or '' for none.
+    `postponed` lists rained-out games in the same shape minus the scores; they
+    render after the finals, so an all-rainout day still makes a card.
     Returns (path, (w, h))."""
-    if not games:
+    if not games and not postponed:
         raise CardRenderError('no games to render')
     body = (f'<div class="card">{_head(title, date_label)}'
-            f'{"".join(_game_block(g) for g in games)}{FOOTER}</div>')
+            f'{"".join(_game_block(g) for g in games)}'
+            f'{"".join(_postponed_block(g) for g in postponed)}{FOOTER}</div>')
     return _shoot(_document(RESULTS_CSS, body), out_path)
 
 

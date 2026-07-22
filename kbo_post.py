@@ -729,16 +729,20 @@ def with_card(segments, index, card):
     return out
 
 
-def attach_results_card(date_str, finals, segments):
-    """The final-scores digest gets a card of the same slate."""
+def attach_results_card(date_str, finals, cancelled, segments):
+    """The final-scores digest gets a card of the same slate, rainouts
+    included — the card carries the whole post, so a postponement dropped here
+    would vanish entirely."""
     import kbo_card
     import kbo_card_data as data
     records = {g['gameId']: fetch_box_score(g['gameId']) for g in finals}
     rows = data.results_input(finals, {k: v for k, v in records.items() if v})
+    ppd = data.postponed_input(cancelled)
     label = data.card_date(date_str)
     card = build_card(
-        lambda path: kbo_card.render_results_card(label, rows, path),
-        data.results_alt(label, rows))
+        lambda path: kbo_card.render_results_card(label, rows, path,
+                                                  postponed=ppd),
+        data.results_alt(label, rows, ppd))
     return with_card(segments, 0, card)
 
 
@@ -1024,7 +1028,7 @@ def main():
     roster = load_roster()
     added = []
     segments = compose_results(date_str, finals, cancelled)
-    segments = attach_results_card(date_str, finals, segments)
+    segments = attach_results_card(date_str, finals, cancelled, segments)
     segments += box_score_segments(finals, roster, added)
     if added:
         if not dry_run:
