@@ -159,6 +159,14 @@ CROWD_LABEL_TO_CODE = {
     'KIA': 'HT', 'SSG': 'SK', 'LG': 'LG', 'KT': 'KT', 'NC': 'NC',
     '두산': 'OB', '롯데': 'LT', '삼성': 'SS', '키움': 'WO', '한화': 'HH',
 }
+# Crowd-page stadium labels -> the romanised park names KBO fans use. Taken from
+# the page's own stadium column, not derived from the home club, because Samsung
+# hosts at two parks (Daegu and its Pohang sub-venue) and Jamsil is shared.
+CROWD_STADIUM_EN = {
+    '고척': 'Gocheok', '광주': 'Gwangju', '대구': 'Daegu', '대전': 'Daejeon',
+    '문학': 'Munhak', '사직': 'Sajik', '수원': 'Suwon', '잠실': 'Jamsil',
+    '창원': 'Changwon', '포항': 'Pohang',
+}
 
 # KBO lists every player surname-first ("WELLS Lachlan"); we flip Western
 # imports to first-last ("Lachlan Wells"). Foreign is known from the roster
@@ -279,10 +287,12 @@ def fetch_box_score(game_id):
 
 
 def fetch_attendance(date_str):
-    """{home_team_code: '23,000'} for a KST date, scraped from KBO's official
-    daily crowd page, or {} on any failure — attendance is a nice-to-have and
-    must never cost a post. Keyed by home team (one home game per club per day),
-    so the caller looks it up by g['homeTeamCode']."""
+    """{home_team_code: ('23,000', 'Munhak')} for a KST date — the attendance
+    figure and romanised venue, scraped from KBO's official daily crowd page —
+    or {} on any failure (attendance is a nice-to-have and must never cost a
+    post). Keyed by home team (one home game per club per day), so the caller
+    looks it up by g['homeTeamCode']. Venue comes from the page's stadium
+    column, not the home club, because Samsung hosts at two parks."""
     dslash = date_str.replace('-', '/')
     try:
         html = fetch_text(CROWD_URL, accept='text/html',
@@ -294,7 +304,7 @@ def fetch_attendance(date_str):
         if d == dslash:
             code = CROWD_LABEL_TO_CODE.get(home)
             if code:
-                out[code] = att
+                out[code] = (att, CROWD_STADIUM_EN.get(stadium, ''))
     return out
 
 
@@ -817,8 +827,12 @@ def box_score_segments(finals, roster, added, attendance=None):
         if not record:
             continue
         att = attendance.get(g['homeTeamCode'])
-        body = box_score_body(g, record, roster, added, att)
-        game = data.box_input(g, record, roster, added, att)
+        att_str = None
+        if att:
+            figure, venue = att
+            att_str = f'{figure} · {venue}' if venue else figure
+        body = box_score_body(g, record, roster, added, att_str)
+        game = data.box_input(g, record, roster, added, att_str)
         label = data.card_date(f'{g["gameId"][:4]}-{g["gameId"][4:6]}-{g["gameId"][6:8]}')
         card = build_card(
             lambda path, game=game, label=label:
