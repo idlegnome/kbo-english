@@ -139,6 +139,27 @@ STANDINGS_TEAM_CODE = {
     'HANWHA': 'HH', 'NC': 'NC', 'LOTTE': 'LT', 'SSG': 'SK', 'KIWOOM': 'WO',
 }
 
+# KBO's official daily crowd page publishes each game's attendance in lockstep
+# with the game going final (verified 19-22 Jul 2026), so every game in a
+# results post has its figure by the 23:30 post time. The page lists the whole
+# season oldest-first; we filter to the post's date and key by home team (one
+# home game per club per day). SSG (Munhak) and Samsung (Daegu) report round
+# home figures (23,000 / 24,000) — announced sellouts at capacity, not turnstile
+# counts — but they are the official numbers, so they are shown as published.
+CROWD_URL = 'https://www.koreabaseball.com/Record/Crowd/GraphDaily.aspx'
+CROWD_ROW_RE = re.compile(
+    r'<td[^>]*>\s*(\d{4}/\d\d/\d\d)\s*</td>\s*'   # date
+    r'<td[^>]*>\s*([^<]+?)\s*</td>\s*'            # day of week
+    r'<td[^>]*>\s*([^<]+?)\s*</td>\s*'            # home label
+    r'<td[^>]*>\s*([^<]+?)\s*</td>\s*'            # away label
+    r'<td[^>]*>\s*([^<]+?)\s*</td>\s*'            # stadium
+    r'<td[^>]*>\s*([\d,]+)\s*</td>')              # attendance
+# Crowd-page team labels (mixed English/Korean) -> our team codes.
+CROWD_LABEL_TO_CODE = {
+    'KIA': 'HT', 'SSG': 'SK', 'LG': 'LG', 'KT': 'KT', 'NC': 'NC',
+    '두산': 'OB', '롯데': 'LT', '삼성': 'SS', '키움': 'WO', '한화': 'HH',
+}
+
 # KBO lists every player surname-first ("WELLS Lachlan"); we flip Western
 # imports to first-last ("Lachlan Wells"). Foreign is known from the roster
 # table (salary currency). East-Asian imports (Japanese/Taiwanese/Chinese) are
@@ -183,22 +204,24 @@ def team_label(code):
     return f'{emoji} {name}' if emoji else name
 
 
-def fetch_text(url, retries=4, backoff=3):
+def fetch_text(url, retries=4, backoff=3, accept='application/json', referer=None):
     """GET a URL as text via curl (not urllib — Homebrew Python 3.13's urllib
-    fails TLS cert verification on this machine).
+    fails TLS cert verification on this machine). `accept`/`referer` let the
+    same retry path serve the HTML crowd page as well as the JSON APIs.
 
     Retries on any curl transport failure (nonzero exit: connect/DNS/TLS/
     timeout, e.g. exit 6/7/28/35) with a linear backoff, so a momentary
     network blip at the scheduled fire time doesn't crash the whole run and
     skip a post. curl returns 0 for HTTP errors like 404 without -f, so those
     are not retried here."""
+    cmd = ['curl', '-s', '--compressed', '--max-time', '30',
+           '-H', 'User-Agent: Mozilla/5.0', '-H', f'Accept: {accept}']
+    if referer:
+        cmd += ['-H', f'Referer: {referer}']
+    cmd.append(url)
     last = None
     for attempt in range(retries):
-        result = subprocess.run(
-            ['curl', '-s', '--max-time', '30',
-             '-H', 'User-Agent: Mozilla/5.0', '-H', 'Accept: application/json', url],
-            capture_output=True, text=True
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             return result.stdout
         last = result.returncode
@@ -253,6 +276,26 @@ def fetch_box_score(game_id):
     if not data.get('success'):
         return None
     return data.get('result', {}).get('recordData') or None
+
+
+def fetch_attendance(date_str):
+    """{home_team_code: '23,000'} for a KST date, scraped from KBO's official
+    daily crowd page, or {} on any failure — attendance is a nice-to-have and
+    must never cost a post. Keyed by home team (one home game per club per day),
+    so the caller looks it up by g['homeTeamCode']."""
+    dslash = date_str.replace('-', '/')
+    try:
+        html = fetch_text(CROWD_URL, accept='text/html',
+                          referer='https://www.koreabaseball.com/')
+    except RuntimeError:
+        return {}
+    out = {}
+    for d, dow, home, away, stadium, att in CROWD_ROW_RE.findall(html):
+        if d == dslash:
+            code = CROWD_LABEL_TO_CODE.get(home)
+            if code:
+                out[code] = att
+    return out
 
 
 def format_date(date_str):
@@ -540,12 +583,15 @@ def hr_labels(game, record, roster, added):
     return labels
 
 
-def box_score_body(game, record, roster, added):
+def box_score_body(game, record, roster, added, attendance=None):
     """One game's compact box score as a post body: the matchup and final
     (with a non-regulation inning tag), then hits/errors, the pitching
-    decision, and any home runs. The HR list is trimmed to keep the post under
-    Bluesky's limit, appending '(+N more)' when batters are dropped (a slugfest
-    with long names could otherwise overflow)."""
+    decision, attendance, and any home runs. The HR list is trimmed to keep the
+    post under Bluesky's limit, appending '(+N more)' when batters are dropped
+    (a slugfest with long names could otherwise overflow).
+
+    This text is the fallback the post carries only if its card fails to render;
+    the card is the usual surface."""
     a, h = game['awayTeamScore'], game['homeTeamScore']
     head = (f'{team_label(game["awayTeamCode"])} {a} @ '
             f'{team_label(game["homeTeamCode"])} {h}')
@@ -557,6 +603,8 @@ def box_score_body(game, record, roster, added):
                  decision_line(record, roster, added)):
         if line:
             base.append(line)
+    if attendance:
+        base.append(f'Attendance: {attendance}')
     labels = hr_labels(game, record, roster, added)
 
     for n in range(len(labels), -1, -1):        # try all HRs, then trim from end
@@ -758,17 +806,19 @@ def attach_results_card(date_str, finals, cancelled, segments):
     return with_card(segments, 0, card)
 
 
-def box_score_segments(finals, roster, added):
+def box_score_segments(finals, roster, added, attendance=None):
     """A box-score reply per finished game, each carrying its own card."""
     import kbo_card
     import kbo_card_data as data
+    attendance = attendance or {}
     segments = []
     for g in by_start(finals):
         record = fetch_box_score(g['gameId'])
         if not record:
             continue
-        body = box_score_body(g, record, roster, added)
-        game = data.box_input(g, record, roster, added)
+        att = attendance.get(g['homeTeamCode'])
+        body = box_score_body(g, record, roster, added, att)
+        game = data.box_input(g, record, roster, added, att)
         label = data.card_date(f'{g["gameId"][:4]}-{g["gameId"][4:6]}-{g["gameId"][6:8]}')
         card = build_card(
             lambda path, game=game, label=label:
@@ -1039,9 +1089,10 @@ def main():
     print(f'KBO {date_str} · results: {len(finals)} final, {len(cancelled)} postponed.')
     roster = load_roster()
     added = []
+    attendance = fetch_attendance(date_str)
     segments = compose_results(date_str, finals, cancelled)
     segments = attach_results_card(date_str, finals, cancelled, segments)
-    segments += box_score_segments(finals, roster, added)
+    segments += box_score_segments(finals, roster, added, attendance)
     if added:
         if not dry_run:
             write_json_atomic(ROSTER, roster, ensure_ascii=False,

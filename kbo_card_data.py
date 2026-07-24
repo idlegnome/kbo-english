@@ -215,8 +215,8 @@ def hr_groups(game, record, roster, added):
     return groups
 
 
-def box_input(game, record, roster, added):
-    return {
+def box_input(game, record, roster, added, attendance=None):
+    out = {
         **team_marks(game['awayTeamCode'], 'away'),
         'away_name': k.TEAMS.get(game['awayTeamCode'], game['awayTeamCode']),
         'away_score': game['awayTeamScore'],
@@ -227,6 +227,10 @@ def box_input(game, record, roster, added):
         'pitchers': pitcher_decisions(record, roster, added),
         'hr': hr_groups(game, record, roster, added),
     }
+    # Attendance rides the card's generic 'extra' KV row, below the home runs.
+    if attendance:
+        out['extra'] = [('Attendance', attendance)]
+    return out
 
 
 def starter_text(starter, roster):
@@ -378,6 +382,8 @@ def box_alt(date_label, game):
         listed = '; '.join(f'{g.get("team_name", "")} {g["names"]}'.strip()
                            for g in groups)
         parts.append(f'Home runs: {listed}.')
+    for label, value in game.get('extra') or ():
+        parts.append(f'{label}: {value}.')
     return ' '.join(parts)
 
 
