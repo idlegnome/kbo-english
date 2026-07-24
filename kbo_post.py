@@ -56,6 +56,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -182,17 +183,28 @@ def team_label(code):
     return f'{emoji} {name}' if emoji else name
 
 
-def fetch_text(url):
+def fetch_text(url, retries=4, backoff=3):
     """GET a URL as text via curl (not urllib — Homebrew Python 3.13's urllib
-    fails TLS cert verification on this machine)."""
-    result = subprocess.run(
-        ['curl', '-s', '--max-time', '30',
-         '-H', 'User-Agent: Mozilla/5.0', '-H', 'Accept: application/json', url],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f'curl failed ({result.returncode}) fetching {url}')
-    return result.stdout
+    fails TLS cert verification on this machine).
+
+    Retries on any curl transport failure (nonzero exit: connect/DNS/TLS/
+    timeout, e.g. exit 6/7/28/35) with a linear backoff, so a momentary
+    network blip at the scheduled fire time doesn't crash the whole run and
+    skip a post. curl returns 0 for HTTP errors like 404 without -f, so those
+    are not retried here."""
+    last = None
+    for attempt in range(retries):
+        result = subprocess.run(
+            ['curl', '-s', '--max-time', '30',
+             '-H', 'User-Agent: Mozilla/5.0', '-H', 'Accept: application/json', url],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return result.stdout
+        last = result.returncode
+        if attempt < retries - 1:
+            time.sleep(backoff * (attempt + 1))
+    raise RuntimeError(f'curl failed ({last}) fetching {url} after {retries} tries')
 
 
 def fetch_games(date_str):
